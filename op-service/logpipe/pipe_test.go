@@ -23,18 +23,22 @@ func TestPipeLogs(t *testing.T) {
 	// Write the log output to the pipe
 	go func() {
 		defer wg.Done()
-		_, err := io.Copy(w, bytes.NewReader([]byte(`{"level": "DEBUG", "msg": "hello", "foo": 1}`+"\n")))
+		_, err := io.Copy(w, bytes.NewReader([]byte(`{"level": "DEBUG", "fields": {"message": "hello", "foo": 1}}`+"\n")))
 		require.NoError(t, err)
 		_, err = io.Copy(w, bytes.NewReader([]byte(`test invalid JSON`+"\n")))
 		require.NoError(t, err)
-		_, err = io.Copy(w, bytes.NewReader([]byte(`{"msg": "world", "level": "INFO", "bar": "sunny"}`+"\n")))
+		_, err = io.Copy(w, bytes.NewReader([]byte(`{"fields": {"message": "world", "bar": "sunny"}, "level": "INFO"}`+"\n")))
 		require.NoError(t, err)
 		require.NoError(t, w.Close())
 	}()
 	// Read the log output from the pipe
 	go func() {
 		defer wg.Done()
-		err := PipeLogs(r, logger)
+		toLogger := ToLogger(logger)
+		logProc := func(line []byte) {
+			toLogger(ParseRethLog(line))
+		}
+		err := PipeLogs(r, logProc)
 		require.NoError(t, err)
 	}()
 	wg.Wait()
@@ -49,7 +53,7 @@ func TestPipeLogs(t *testing.T) {
 		testlog.NewLevelFilter(log.LevelWarn),
 		testlog.NewAttributesContainsFilter("line", "test invalid JSON"))
 	require.NotNil(t, entry2)
-	require.Equal(t, "Invalid JSON log line", entry2.Message)
+	require.Equal(t, "Invalid JSON", entry2.Message)
 
 	entry3 := capt.FindLog(
 		testlog.NewLevelFilter(log.LevelInfo),

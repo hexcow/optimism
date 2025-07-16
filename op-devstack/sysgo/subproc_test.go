@@ -9,6 +9,7 @@ import (
 	"github.com/ethereum/go-ethereum/log"
 
 	"github.com/ethereum-optimism/optimism/op-devstack/devtest"
+	"github.com/ethereum-optimism/optimism/op-service/logpipe"
 	"github.com/ethereum-optimism/optimism/op-service/testlog"
 )
 
@@ -24,7 +25,10 @@ func TestSubProcess(gt *testing.T) {
 	p := devtest.NewP(context.Background(), logger, onFailNow, onSkipNow)
 	gt.Cleanup(p.Close)
 
-	sp := NewSubProcess(p)
+	logProc := logpipe.LogProcessor(func(line []byte) {
+		logger.Info(string(line))
+	})
+	sp := NewSubProcess(p, logProc, logProc)
 
 	gt.Log("Running first sub-process")
 	testSleep(gt, capt, sp)
@@ -47,9 +51,7 @@ func testEcho(gt *testing.T, capt *testlog.CapturingHandler, sp *SubProcess) {
 	gt.Log("Stopped sub-process")
 
 	require.NotNil(gt, capt.FindLog(
-		testlog.NewMessageFilter("Invalid JSON log line"),
-		testlog.NewAttributesFilter("src", "stdout"),
-		testlog.NewAttributesFilter("line", "hello world")))
+		testlog.NewMessageFilter("hello world")))
 
 	require.NotNil(gt, capt.FindLog(
 		testlog.NewMessageFilter("Sub-process stopped"),

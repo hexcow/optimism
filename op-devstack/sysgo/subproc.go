@@ -25,14 +25,19 @@ type SubProcess struct {
 	p   devtest.P
 	cmd *exec.Cmd
 
+	stdOutLogs logpipe.LogProcessor
+	stdErrLogs logpipe.LogProcessor
+
 	waitCtx context.Context // closed when process-Wait completes
 
 	mu sync.Mutex
 }
 
-func NewSubProcess(p devtest.P) *SubProcess {
+func NewSubProcess(p devtest.P, stdOutLogs, stdErrLogs logpipe.LogProcessor) *SubProcess {
 	return &SubProcess{
-		p: p,
+		p:          p,
+		stdOutLogs: stdOutLogs,
+		stdErrLogs: stdErrLogs,
 	}
 }
 
@@ -44,14 +49,16 @@ func (sp *SubProcess) Start(cmdPath string, args []string, env []string) error {
 	}
 	cmd := exec.Command(cmdPath, args...)
 	cmd.Env = append(os.Environ(), env...)
-	stdout, _ := cmd.StdoutPipe()
-	stderr, _ := cmd.StderrPipe()
+	stdout, err := cmd.StdoutPipe()
+	sp.p.Require().NoError(err, "stdout err")
+	stderr, err := cmd.StderrPipe()
+	sp.p.Require().NoError(err, "stderr err")
 	go func() {
-		err := logpipe.PipeLogs(stdout, sp.p.Logger().New("src", "stdout"))
+		err := logpipe.PipeLogs(stdout, sp.stdOutLogs)
 		sp.p.Require().NoError(err, "stdout logging error")
 	}()
 	go func() {
-		err := logpipe.PipeLogs(stderr, sp.p.Logger().New("src", "stderr"))
+		err := logpipe.PipeLogs(stderr, sp.stdErrLogs)
 		sp.p.Require().NoError(err, "stderr logging error")
 	}()
 	if err := cmd.Start(); err != nil {

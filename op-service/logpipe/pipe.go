@@ -5,13 +5,100 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"io"
 	"log/slog"
 
 	oplog "github.com/ethereum-optimism/optimism/op-service/log"
 	"github.com/ethereum/go-ethereum/log"
 )
+
+type rawRethJSONLog struct {
+	//"timestamp" ignored
+	Level  string         `json:"level"`
+	Fields map[string]any `json:"fields"`
+	//"target" ignored"
+}
+
+type RethLogEntry struct {
+	Message string
+	Level   slog.Level
+	Fields  map[string]any
+}
+
+func ParseRethLog(line []byte) LogEntry {
+	dec := json.NewDecoder(bytes.NewReader(line))
+	dec.UseNumber() // to preserve number formatting
+	var e rawRethJSONLog
+	if err := dec.Decode(&e); err != nil {
+		return RethLogEntry{
+			Message: "Invalid JSON",
+			Level:   slog.LevelWarn,
+			Fields:  map[string]any{"line": string(line)},
+		}
+	}
+	lvl, err := oplog.LevelFromString(e.Level)
+	if err != nil {
+		lvl = log.LevelInfo
+	}
+	msg, _ := e.Fields["message"].(string)
+	delete(e.Fields, "message")
+
+	return RethLogEntry{
+		Message: msg,
+		Level:   lvl,
+		Fields:  e.Fields,
+	}
+}
+
+func (e RethLogEntry) LogLevel() slog.Level {
+	return e.Level
+}
+
+func (e RethLogEntry) LogMessage() string {
+	return e.Message
+}
+
+func (e RethLogEntry) LogFields() []any {
+	attrs := make([]any, 0, len(e.Fields))
+	for k, v := range e.Fields {
+		if x, ok := v.(json.Number); ok {
+			v = x.String()
+		}
+		attrs = append(attrs, slog.Any(k, v))
+	}
+	return attrs
+}
+
+func (e RethLogEntry) FieldValue(key string) any {
+	return e.Fields[key]
+}
+
+type LogEntry interface {
+	LogLevel() slog.Level
+	LogMessage() string
+	LogFields() []any
+	FieldValue(key string) any
+}
+
+type LogProcessor func(line []byte)
+
+type LogParser func(line []byte) LogEntry
+
+func ToLogger(logger log.Logger) func(e LogEntry) {
+	return func(e LogEntry) {
+		msg := e.LogMessage()
+		attrs := e.LogFields()
+		lvl := e.LogLevel()
+
+		if lvl >= log.LevelCrit {
+			// If a sub-process has a critical error, this process can handle it
+			// Don't force an os.Exit, downgrade to error instead
+			lvl = log.LevelError
+			attrs = append(attrs, slog.String("innerLevel", "CRIT"))
+		}
+		logger.Log(lvl, msg, attrs...)
+	}
+}
 
 // PipeLogs reads logs from the provided io.ReadCloser (e.g., subprocess stdout),
 // and outputs them to the provider logger.
@@ -27,7 +114,7 @@ import (
 // Crit level is mapped to error-level, to prevent untrusted crit logs from stopping the process.
 // This function processes until the stream ends, and closes the reader.
 // This returns the first read error (If we run into EOF, nil returned is returned instead).
-func PipeLogs(r io.ReadCloser, logger log.Logger) (outErr error) {
+func PipeLogs(r io.ReadCloser, onLog LogProcessor) (outErr error) {
 	defer func() {
 		outErr = errors.Join(outErr, r.Close())
 	}()
@@ -38,61 +125,7 @@ func PipeLogs(r io.ReadCloser, logger log.Logger) (outErr error) {
 		if len(lineBytes) == 0 {
 			continue // Skip empty lines
 		}
-		dec := json.NewDecoder(bytes.NewReader(lineBytes))
-		dec.UseNumber() // to preserve number formatting
-
-		var m map[string]any
-		if err := dec.Decode(&m); err != nil {
-			logger.Warn("Invalid JSON log line", "line", string(lineBytes), "err", err)
-			continue
-		}
-
-		levelAny, ok := m["level"]
-		if !ok {
-			logger.Warn("Log line missing 'level' field", "line", string(lineBytes))
-			continue
-		}
-		delete(m, "level")
-
-		msgAny, ok := m["msg"]
-		msg := ""
-		if ok {
-			if s, ok := msgAny.(string); ok {
-				msg = s
-			} else {
-				msg = fmt.Sprint(msgAny)
-			}
-			delete(m, "msg")
-		}
-
-		// Build attributes
-		attrs := make([]any, 0, len(m))
-		for k, v := range m {
-			if x, ok := v.(json.Number); ok {
-				v = x.String()
-			}
-			attrs = append(attrs, slog.Any(k, v))
-		}
-
-		// Determine log level
-		levelStr, ok := levelAny.(string)
-		if !ok {
-			logger.Warn("Invalid 'level' type", "value", levelAny, "line", string(lineBytes))
-			continue
-		}
-
-		lvl, err := oplog.LevelFromString(levelStr)
-		if err != nil {
-			logger.Warn("Invalid 'level' value, defaulting to INFO now", "value", levelStr)
-			lvl = log.LevelInfo
-		}
-		if lvl >= log.LevelCrit {
-			// If a sub-process has a critical error, this process can handle it
-			// Don't force an os.Exit, downgrade to error instead
-			lvl = log.LevelError
-			attrs = append(attrs, slog.String("innerLevel", "CRIT"))
-		}
-		logger.Log(lvl, msg, attrs...)
+		onLog(lineBytes)
 	}
 
 	return scanner.Err()
