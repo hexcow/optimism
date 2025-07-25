@@ -8,6 +8,8 @@ ACCEPTOR_IMAGE := env_var_or_default("ACCEPTOR_IMAGE", DOCKER_REGISTRY + "/op-ac
 default:
     @just acceptance-test simple base
 
+
+
 holocene:
     @just acceptance-test simple holocene
 
@@ -19,27 +21,27 @@ interop:
 
 
 # Run acceptance tests with mise-managed binary
+# Usage: just acceptance-test [devnet] [gate]
+# Examples:
+#   just acceptance-test simple base     # External devnet with specific gate
+#   just acceptance-test "" base         # In-process (sysgo) with specific gate
+#   just acceptance-test "" ""           # In-process gateless mode (all tests)
 acceptance-test devnet="" gate="holocene":
     #!/usr/bin/env bash
     set -euo pipefail
 
-     # Check if mise is installed
-    if command -v mise >/dev/null; then
-        echo "mise is installed"
+    # Determine if we're running in gateless mode (empty gate = gateless)
+    GATELESS_MODE=false
+    if [[ "{{gate}}" == "" ]]; then
+        GATELESS_MODE=true
+        echo -e "DEVNET: in-memory (sysgo), MODE: gateless (all tests)\n"
+    elif [[ "{{devnet}}" == "" ]]; then
+        echo -e "DEVNET: in-memory (sysgo), GATE: {{gate}}\n"
     else
-        echo "Mise not installed, falling back to Docker..."
-        just acceptance-test-docker {{devnet}} {{gate}}
+        echo -e "DEVNET: {{devnet}} (sysext), GATE: {{gate}}\n"
     fi
 
-    if [[ "{{devnet}}" == "" ]]; then
-        echo -e "DEVNET: in-memory, GATE: {{gate}}\n"
-    else
-        echo -e "DEVNET: {{devnet}}, GATE: {{gate}}\n"
-    fi
-
-    # For sysgo orchestrator (in-process testing) ensure:
-    # - contracts are built
-    # - cannon dependencies are built
+    # For sysgo orchestrator (in-process testing) ensure dependencies are built
     # Note: build contracts only if not in CI (CI jobs already take care of this)
     if [[ "{{devnet}}" == "" && -z "${CIRCLECI:-}" ]]; then
         echo "Building contracts (local build)..."
@@ -63,6 +65,19 @@ acceptance-test devnet="" gate="holocene":
         fi
     fi
 
+    cd {{REPO_ROOT}}/op-acceptance-tests
+
+
+    # Gate mode: use existing gate-based approach
+    # Check if mise is installed
+    if command -v mise >/dev/null; then
+        echo "mise is installed"
+    else
+        echo "Mise not installed, falling back to Docker..."
+        just acceptance-test-docker {{devnet}} {{gate}}
+        exit 0
+    fi
+
     # Try to install op-acceptor using mise
     if ! mise install op-acceptor; then
         echo "WARNING: Failed to install op-acceptor with mise, falling back to Docker..."
@@ -74,31 +89,45 @@ acceptance-test devnet="" gate="holocene":
     BINARY_PATH=$(mise which op-acceptor)
     echo "Using mise-managed binary: $BINARY_PATH"
 
-    # Build the command with conditional parameters
-    CMD_ARGS=(
-        "go" "run" "cmd/main.go"
-        "--gate" "{{gate}}"
-        "--testdir" "{{REPO_ROOT}}"
-        "--validators" "./acceptance-tests.yaml"
-        "--log.level" "${LOG_LEVEL:-info}"
-        "--acceptor" "$BINARY_PATH"
-    )
+    if [[ "$GATELESS_MODE" == "true" ]]; then
+        # Gateless mode: auto-discover all tests within a directory
+        echo "Running gateless mode - auto-discovering all tests in ./op-acceptance-tests/..."
 
-    # Set orchestrator and devnet based on input
-    if [[ "{{devnet}}" == "" ]]; then
-        # In-process testing
-        CMD_ARGS+=("--orchestrator" "sysgo")
+        # (Temporarily) allow skips
+        op-acceptor \
+            --testdir {{REPO_ROOT}}/op-acceptance-tests/... \
+            --orchestrator sysgo \
+            --allow-skips \
+            --timeout 90m \
+            --log.level "${LOG_LEVEL:-info}"
     else
-        # External devnet testing
-        CMD_ARGS+=("--orchestrator" "sysext")
-        CMD_ARGS+=("--devnet" "{{devnet}}")
-        # Include kurtosis-dir for devnet deployment
-        CMD_ARGS+=("--kurtosis-dir" "{{KURTOSIS_DIR}}")
-    fi
+        # Gate mode: use a gate-based testing approach
 
-    # Execute the command
-    cd {{REPO_ROOT}}/op-acceptance-tests
-    "${CMD_ARGS[@]}"
+        # Build the command with conditional parameters
+        CMD_ARGS=(
+            "go" "run" "cmd/main.go"
+            "--gate" "{{gate}}"
+            "--testdir" "{{REPO_ROOT}}"
+            "--validators" "./acceptance-tests.yaml"
+            "--log.level" "${LOG_LEVEL:-info}"
+            "--acceptor" "$BINARY_PATH"
+        )
+
+        # Set orchestrator and devnet based on input
+        if [[ "{{devnet}}" == "" ]]; then
+            # In-process testing
+            CMD_ARGS+=("--orchestrator" "sysgo")
+        else
+            # External devnet testing
+            CMD_ARGS+=("--orchestrator" "sysext")
+            CMD_ARGS+=("--devnet" "{{devnet}}")
+            # Include kurtosis-dir for devnet deployment
+            CMD_ARGS+=("--kurtosis-dir" "{{KURTOSIS_DIR}}")
+        fi
+
+        # Execute the command
+        "${CMD_ARGS[@]}"
+    fi
 
 
 # Run acceptance tests against a devnet using Docker (fallback if needed)
