@@ -23,8 +23,9 @@ import (
 )
 
 type Config struct {
-	L1 L1EndpointSetup
-	L2 L2EndpointSetup
+	L1  L1EndpointSetup
+	L2  L2EndpointSetup // anteva: remove this
+	L2s []L2EndpointSetup
 
 	Beacon L1BeaconEndpointSetup
 
