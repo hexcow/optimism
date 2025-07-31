@@ -1,6 +1,7 @@
 package sysgo
 
 import (
+	"net"
 	"net/url"
 	"strconv"
 	"sync"
@@ -126,6 +127,12 @@ func (n *OpGeth) Start() {
 
 	n.authProxy.SetUpstream(proxyAddr(require, l2Geth.AuthRPC().RPC()))
 	n.userProxy.SetUpstream(proxyAddr(require, l2Geth.UserRPC().RPC()))
+}
+
+func proxyAddr(require *testreq.Assertions, urlStr string) string {
+	u, err := url.Parse(urlStr)
+	require.NoError(err)
+	return net.JoinHostPort(u.Hostname(), u.Port())
 }
 
 func rpcPort(require *testreq.Assertions, rpc string) int {

@@ -1,13 +1,10 @@
 package sysgo
 
 import (
-	"net"
-	"net/url"
 	"os"
 
 	"github.com/ethereum-optimism/optimism/op-devstack/devtest"
 	"github.com/ethereum-optimism/optimism/op-devstack/stack"
-	"github.com/ethereum-optimism/optimism/op-service/testreq"
 )
 
 type L2ELNode interface {
@@ -43,12 +40,6 @@ func WithGlobalL2ELOption(opt L2ELOption) stack.Option[*Orchestrator] {
 	return stack.BeforeDeploy(func(o *Orchestrator) {
 		o.l2ELOptions = append(o.l2ELOptions, opt)
 	})
-}
-
-func proxyAddr(require *testreq.Assertions, urlStr string) string {
-	u, err := url.Parse(urlStr)
-	require.NoError(err)
-	return net.JoinHostPort(u.Hostname(), u.Port())
 }
 
 type L2ELOptionFn func(p devtest.P, id stack.L2ELNodeID, cfg *L2ELConfig)
