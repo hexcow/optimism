@@ -196,12 +196,12 @@ func WithOpReth(id stack.L2ELNodeID, opts ...L2ELOption) stack.Option[*Orchestra
 			}
 		}
 		stdOutLogs := logpipe.LogProcessor(func(line []byte) {
-			e := logpipe.ParseRethLog(line)
+			e := logpipe.ParseRustStructuredLogs(line)
 			logOut(e)
 			onLogEntry(e)
 		})
 		stdErrLogs := logpipe.LogProcessor(func(line []byte) {
-			e := logpipe.ParseRethLog(line)
+			e := logpipe.ParseRustStructuredLogs(line)
 			logErr(e)
 		})
 		l2EL.sub = NewSubProcess(p, stdOutLogs, stdErrLogs)

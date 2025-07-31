@@ -3,13 +3,7 @@ package sysgo
 import (
 	"net"
 	"net/url"
-	"strconv"
 	"sync"
-
-	"github.com/ethereum/go-ethereum/eth/ethconfig"
-	"github.com/ethereum/go-ethereum/log"
-	gn "github.com/ethereum/go-ethereum/node"
-	"github.com/ethereum/go-ethereum/p2p"
 
 	"github.com/ethereum-optimism/optimism/op-devstack/devtest"
 	"github.com/ethereum-optimism/optimism/op-devstack/shim"
@@ -19,6 +13,10 @@ import (
 	"github.com/ethereum-optimism/optimism/op-service/client"
 	"github.com/ethereum-optimism/optimism/op-service/testreq"
 	"github.com/ethereum-optimism/optimism/op-service/testutils/tcpproxy"
+	"github.com/ethereum/go-ethereum/eth/ethconfig"
+	"github.com/ethereum/go-ethereum/log"
+	gn "github.com/ethereum/go-ethereum/node"
+	"github.com/ethereum/go-ethereum/p2p"
 )
 
 type OpGeth struct {
@@ -108,39 +106,13 @@ func (n *OpGeth) Start() {
 				ListenAddr:  "127.0.0.1:0",
 				MaxPeers:    10,
 			}
-			if n.authRPC != "" {
-				// Preserve the existing auth rpc port
-				nodeCfg.AuthPort = rpcPort(require, n.authRPC)
-			}
-			if n.userRPC != "" {
-				// Preserve the existing websocket rpc port
-				nodeCfg.WSPort = rpcPort(require, n.userRPC)
-			}
 			return nil
 		})
 	require.NoError(err)
 	require.NoError(l2Geth.Node.Start())
 	n.l2Geth = l2Geth
-
-	n.authRPC = l2Geth.AuthRPC().RPC()
-	n.userRPC = l2Geth.UserRPC().RPC()
-
 	n.authProxy.SetUpstream(proxyAddr(require, l2Geth.AuthRPC().RPC()))
 	n.userProxy.SetUpstream(proxyAddr(require, l2Geth.UserRPC().RPC()))
-}
-
-func proxyAddr(require *testreq.Assertions, urlStr string) string {
-	u, err := url.Parse(urlStr)
-	require.NoError(err)
-	return net.JoinHostPort(u.Hostname(), u.Port())
-}
-
-func rpcPort(require *testreq.Assertions, rpc string) int {
-	u, err := url.Parse(rpc)
-	require.NoError(err, "Failed to parse existing rpc url")
-	port, err := strconv.Atoi(u.Port())
-	require.NoError(err, "Invalid rpc port")
-	return port
 }
 
 func (n *OpGeth) Stop() {
@@ -154,6 +126,12 @@ func (n *OpGeth) Stop() {
 	closeErr := n.l2Geth.Close()
 	n.logger.Info("Closed op-geth", "id", n.id, "err", closeErr)
 	n.l2Geth = nil
+}
+
+func proxyAddr(require *testreq.Assertions, urlStr string) string {
+	u, err := url.Parse(urlStr)
+	require.NoError(err)
+	return net.JoinHostPort(u.Hostname(), u.Port())
 }
 
 func WithOpGeth(id stack.L2ELNodeID, opts ...L2ELOption) stack.Option[*Orchestrator] {
@@ -184,7 +162,7 @@ func WithOpGeth(id stack.L2ELNodeID, opts ...L2ELOption) stack.Option[*Orchestra
 
 		l2EL := &OpGeth{
 			id:            id,
-			p:             p,
+			p:             orch.P(),
 			logger:        logger,
 			l2Net:         l2Net,
 			jwtPath:       jwtPath,

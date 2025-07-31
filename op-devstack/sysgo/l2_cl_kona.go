@@ -116,10 +116,6 @@ func WithKonaNode(l2CLID stack.L2CLNodeID, l1CLID stack.L1CLNodeID, l1ELID stack
 			// TODO: WS RPC addresses do not work and will make the startup panic with a connection error in the
 			// JWT validation / engine-capabilities setup code-path.
 			"KONA_NODE_L2_ENGINE_RPC=" + strings.ReplaceAll(l2EL.EngineRPC(), "ws://", "http://"),
-			// TODO: why does Kona need this in addition to auth RPC?
-			// TODO: this does not work with the userRPC, and kurtosis uses authRPC,
-			//  because of engine-capability-negotiation on this RPC!?
-			"KONA_NODE_L2_ETH_RPC=" + l2EL.UserRPC(),
 			"KONA_NODE_L2_ENGINE_AUTH=" + l2EL.JWTPath(),
 			"KONA_NODE_ROLLUP_CONFIG=" + tempRollupCfgPath,
 			"KONA_NODE_P2P_NO_DISCOVERY=true",
@@ -145,6 +141,7 @@ func WithKonaNode(l2CLID stack.L2CLNodeID, l1CLID stack.L1CLNodeID, l1ELID stack
 			envVars = append(envVars,
 				"KONA_NODE_P2P_SEQUENCER_KEY="+p2pKeyHex,
 				"KONA_NODE_SEQUENCER_L1_CONFS=0",
+				"KONA_NODE_MODE=Sequencer",
 			)
 		} else {
 			envVars = append(envVars,
@@ -152,24 +149,10 @@ func WithKonaNode(l2CLID stack.L2CLNodeID, l1CLID stack.L1CLNodeID, l1ELID stack
 			)
 		}
 
-		var interopJWTSecret eth.Bytes32
-		if cfg.IndexingMode {
-			jwtPath, jwtSecret := orch.writeDefaultJWT()
-			interopJWTSecret = jwtSecret
-			envVars = append(envVars,
-				"KONA_NODE_SUPERVISOR_RPC_ENABLED=true",
-				"KONA_NODE_SUPERVISOR_IP=127.0.0.1",
-				"KONA_NODE_SUPERVISOR_PORT=0",
-				"KONA_NODE_SUPERVISOR_JWT_SECRET_FILE="+jwtPath,
-			)
-		}
-
 		execPath := os.Getenv("KONA_NODE_EXEC_PATH")
-		if execPath == "" {
-			monorepoRoot, err := findMonorepoRoot("op-devstack/README.md")
-			p.Require().NoError(err, "must find monorepo root")
-			execPath = filepath.Join(monorepoRoot, "../kona/target/debug/kona-node")
-		}
+
+		p.Require().NotEmpty(execPath, "KONA_NODE_EXEC_PATH environment variable must be set")
+
 		_, err = os.Stat(execPath)
 		p.Require().NotErrorIs(err, os.ErrNotExist, "executable must exist")
 
@@ -177,7 +160,7 @@ func WithKonaNode(l2CLID stack.L2CLNodeID, l1CLID stack.L1CLNodeID, l1ELID stack
 			id:               l2CLID,
 			userRPC:          "", // retrieved from logs
 			interopEndpoint:  "", // retrieved from logs
-			interopJwtSecret: interopJWTSecret,
+			interopJwtSecret: eth.Bytes32{},
 			el:               l2ELID,
 			execPath:         execPath,
 			args:             []string{"node"},
@@ -187,29 +170,20 @@ func WithKonaNode(l2CLID stack.L2CLNodeID, l1CLID stack.L1CLNodeID, l1ELID stack
 		logOut := logpipe.ToLogger(p.Logger().New("src", "stdout"))
 		logErr := logpipe.ToLogger(p.Logger().New("src", "stderr"))
 		userRPC := make(chan string, 1)
-		interopRPC := make(chan string, 1)
 		onLogEntry := func(e logpipe.LogEntry) {
 			switch e.LogMessage() {
 			case "RPC server bound to address":
-				select {
-				case userRPC <- "http://" + e.FieldValue("addr").(string):
-				default:
-				}
-			// TODO: Kona-node interop RPC address (when in indexing mode) not extracted yet
-			case "Kona-node interop RPC server started TODO TODO":
-				select {
-				case interopRPC <- "http://" + e.FieldValue("addr").(string):
-				default:
-				}
+				userRPC <- "http://" + e.FieldValue("addr").(string)
 			}
+
 		}
 		stdOutLogs := logpipe.LogProcessor(func(line []byte) {
-			e := logpipe.ParseRethLog(line)
+			e := logpipe.ParseRustStructuredLogs(line)
 			logOut(e)
 			onLogEntry(e)
 		})
 		stdErrLogs := logpipe.LogProcessor(func(line []byte) {
-			e := logpipe.ParseRethLog(line)
+			e := logpipe.ParseRustStructuredLogs(line)
 			logErr(e)
 		})
 		k.sub = NewSubProcess(p, stdOutLogs, stdErrLogs)
@@ -218,10 +192,6 @@ func WithKonaNode(l2CLID stack.L2CLNodeID, l1CLID stack.L1CLNodeID, l1ELID stack
 		k.Start()
 		p.Cleanup(k.Stop)
 		p.Require().NoError(tasks.Await(p.Ctx(), userRPC, &k.userRPC), "need user RPC")
-		if cfg.IndexingMode {
-			p.Require().FailNow("Kona-node indexing mode not supported yet")
-			p.Require().NoError(tasks.Await(p.Ctx(), interopRPC, &k.interopEndpoint), "need interop RPC")
-		}
 		p.Logger().Info("Kona-node is up", "rpc", k.UserRPC())
 		require.True(orch.l2CLs.SetIfMissing(l2CLID, k), "must not already exist")
 	})

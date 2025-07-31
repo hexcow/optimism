@@ -12,25 +12,25 @@ import (
 	"github.com/ethereum/go-ethereum/log"
 )
 
-type rawRethJSONLog struct {
+type rawRustJSONLog struct {
 	//"timestamp" ignored
 	Level  string         `json:"level"`
 	Fields map[string]any `json:"fields"`
 	//"target" ignored"
 }
 
-type RethLogEntry struct {
+type StructuredRustLogEntry struct {
 	Message string
 	Level   slog.Level
 	Fields  map[string]any
 }
 
-func ParseRethLog(line []byte) LogEntry {
+func ParseRustStructuredLogs(line []byte) LogEntry {
 	dec := json.NewDecoder(bytes.NewReader(line))
 	dec.UseNumber() // to preserve number formatting
-	var e rawRethJSONLog
+	var e rawRustJSONLog
 	if err := dec.Decode(&e); err != nil {
-		return RethLogEntry{
+		return StructuredRustLogEntry{
 			Message: "Invalid JSON",
 			Level:   slog.LevelWarn,
 			Fields:  map[string]any{"line": string(line)},
@@ -43,22 +43,22 @@ func ParseRethLog(line []byte) LogEntry {
 	msg, _ := e.Fields["message"].(string)
 	delete(e.Fields, "message")
 
-	return RethLogEntry{
+	return StructuredRustLogEntry{
 		Message: msg,
 		Level:   lvl,
 		Fields:  e.Fields,
 	}
 }
 
-func (e RethLogEntry) LogLevel() slog.Level {
+func (e StructuredRustLogEntry) LogLevel() slog.Level {
 	return e.Level
 }
 
-func (e RethLogEntry) LogMessage() string {
+func (e StructuredRustLogEntry) LogMessage() string {
 	return e.Message
 }
 
-func (e RethLogEntry) LogFields() []any {
+func (e StructuredRustLogEntry) LogFields() []any {
 	attrs := make([]any, 0, len(e.Fields))
 	for k, v := range e.Fields {
 		if x, ok := v.(json.Number); ok {
@@ -69,7 +69,7 @@ func (e RethLogEntry) LogFields() []any {
 	return attrs
 }
 
-func (e RethLogEntry) FieldValue(key string) any {
+func (e StructuredRustLogEntry) FieldValue(key string) any {
 	return e.Fields[key]
 }
 
