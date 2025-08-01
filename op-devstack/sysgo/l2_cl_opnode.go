@@ -32,6 +32,7 @@ import (
 	"github.com/ethereum-optimism/optimism/op-service/oppprof"
 	oprpc "github.com/ethereum-optimism/optimism/op-service/rpc"
 	"github.com/ethereum-optimism/optimism/op-service/sources"
+	"github.com/ethereum-optimism/optimism/op-service/testutils/tcpproxy"
 	"github.com/ethereum-optimism/optimism/op-supervisor/supervisor/backend/depset"
 )
 
@@ -47,6 +48,8 @@ type OpNode struct {
 	p                devtest.P
 	logger           log.Logger
 	el               stack.L2ELNodeID
+	userProxy        *tcpproxy.Proxy
+	interopProxy     *tcpproxy.Proxy
 }
 
 var _ L2CLNode = (*OpNode)(nil)
@@ -78,20 +81,6 @@ func (n *OpNode) InteropRPC() (endpoint string, jwtSecret eth.Bytes32) {
 	return n.opNode.InteropRPC()
 }
 
-func (n *OpNode) rememberPort() {
-	userRPCPort, err := n.opNode.UserRPCPort()
-	n.p.Require().NoError(err)
-	n.cfg.RPC.ListenPort = userRPCPort
-
-	cfg, ok := n.cfg.InteropConfig.(*interop.Config)
-	n.p.Require().True(ok)
-
-	if interopRPCPort, err := n.opNode.InteropRPCPort(); err == nil {
-		cfg.RPCPort = interopRPCPort
-	}
-	n.cfg.InteropConfig = cfg
-}
-
 func (n *OpNode) Start() {
 	n.mu.Lock()
 	defer n.mu.Unlock()
@@ -99,6 +88,24 @@ func (n *OpNode) Start() {
 		n.logger.Warn("Op-node already started")
 		return
 	}
+
+	if n.interopProxy == nil {
+		n.interopProxy = tcpproxy.New(n.logger)
+		n.p.Require().NoError(n.interopProxy.Start())
+		n.p.Cleanup(func() {
+			n.interopProxy.Close()
+		})
+		n.interopEndpoint = "ws://" + n.interopProxy.Addr()
+	}
+	if n.userProxy == nil {
+		n.userProxy = tcpproxy.New(n.logger)
+		n.p.Require().NoError(n.userProxy.Start())
+		n.p.Cleanup(func() {
+			n.userProxy.Close()
+		})
+		n.userRPC = "http://" + n.userProxy.Addr()
+	}
+
 	n.logger.Info("Starting op-node")
 	opNode, err := opnode.NewOpnode(n.logger, n.cfg, func(err error) {
 		n.p.Require().NoError(err, "op-node critical error")
@@ -107,14 +114,11 @@ func (n *OpNode) Start() {
 	n.logger.Info("Started op-node")
 	n.opNode = opNode
 
-	// store endpoints to reuse when restart
-	n.userRPC = opNode.UserRPC().RPC()
-	interopEndpoint, interopJwtSecret := opNode.InteropRPC()
-	n.interopEndpoint = interopEndpoint
-	n.interopJwtSecret = interopJwtSecret
-	// for p2p endpoints / node keys, they are already persistent, stored at p2p configs
+	n.userProxy.SetUpstream(proxyAddr(n.p.Require(), opNode.UserRPC().RPC()))
 
-	n.rememberPort()
+	interopEndpoint, interopJwtSecret := opNode.InteropRPC()
+	n.interopProxy.SetUpstream(proxyAddr(n.p.Require(), interopEndpoint))
+	n.interopJwtSecret = interopJwtSecret
 }
 
 func (n *OpNode) Stop() {

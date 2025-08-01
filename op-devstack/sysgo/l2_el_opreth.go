@@ -12,6 +12,7 @@ import (
 	"github.com/ethereum-optimism/optimism/op-service/client"
 	"github.com/ethereum-optimism/optimism/op-service/logpipe"
 	"github.com/ethereum-optimism/optimism/op-service/tasks"
+	"github.com/ethereum-optimism/optimism/op-service/testutils/tcpproxy"
 )
 
 type OpReth struct {
@@ -20,6 +21,9 @@ type OpReth struct {
 	jwtPath string
 	authRPC string
 	userRPC string
+
+	authProxy *tcpproxy.Proxy
+	userProxy *tcpproxy.Proxy
 
 	execPath string
 	args     []string
@@ -54,8 +58,60 @@ func (n *OpReth) hydrate(system stack.ExtensibleSystem) {
 }
 
 func (n *OpReth) Start() {
+	if n.authProxy == nil {
+		n.authProxy = tcpproxy.New(n.p.Logger())
+		n.p.Require().NoError(n.authProxy.Start())
+		n.p.Cleanup(func() {
+			n.authProxy.Close()
+		})
+		n.authRPC = "ws://" + n.authProxy.Addr()
+	}
+	if n.userProxy == nil {
+		n.userProxy = tcpproxy.New(n.p.Logger())
+		n.p.Require().NoError(n.userProxy.Start())
+		n.p.Cleanup(func() {
+			n.userProxy.Close()
+		})
+		n.userRPC = "ws://" + n.userProxy.Addr()
+	}
+	logOut := logpipe.ToLogger(n.p.Logger().New("src", "stdout"))
+	logErr := logpipe.ToLogger(n.p.Logger().New("src", "stderr"))
+	userRPC := make(chan string, 1)
+	authRPC := make(chan string, 1)
+	onLogEntry := func(e logpipe.LogEntry) {
+		switch e.LogMessage() {
+		case "RPC WS server started":
+			select {
+			case userRPC <- "ws://" + e.FieldValue("url").(string):
+			default:
+			}
+		case "RPC auth server started":
+			select {
+			case authRPC <- "ws://" + e.FieldValue("url").(string):
+			default:
+			}
+		}
+	}
+	stdOutLogs := logpipe.LogProcessor(func(line []byte) {
+		e := logpipe.ParseRustStructuredLogs(line)
+		logOut(e)
+		onLogEntry(e)
+	})
+	stdErrLogs := logpipe.LogProcessor(func(line []byte) {
+		e := logpipe.ParseRustStructuredLogs(line)
+		logErr(e)
+	})
+	n.sub = NewSubProcess(n.p, stdOutLogs, stdErrLogs)
+
 	err := n.sub.Start(n.execPath, n.args, n.env)
 	n.p.Require().NoError(err, "Must start")
+
+	var userRPCAddr, authRPCAddr string
+	n.p.Require().NoError(tasks.Await(n.p.Ctx(), userRPC, &userRPCAddr), "need user RPC")
+	n.p.Require().NoError(tasks.Await(n.p.Ctx(), authRPC, &authRPCAddr), "need auth RPC")
+
+	n.userProxy.SetUpstream(proxyAddr(n.p.Require(), userRPCAddr))
+	n.authProxy.SetUpstream(proxyAddr(n.p.Require(), authRPCAddr))
 }
 
 // Stop stops the op-reth node.
@@ -177,40 +233,10 @@ func WithOpReth(id stack.L2ELNodeID, opts ...L2ELOption) stack.Option[*Orchestra
 			env:      []string{},
 			p:        p,
 		}
-		logOut := logpipe.ToLogger(p.Logger().New("src", "stdout"))
-		logErr := logpipe.ToLogger(p.Logger().New("src", "stderr"))
-		userRPC := make(chan string, 1)
-		authRPC := make(chan string, 1)
-		onLogEntry := func(e logpipe.LogEntry) {
-			switch e.LogMessage() {
-			case "RPC WS server started":
-				select {
-				case userRPC <- "ws://" + e.FieldValue("url").(string):
-				default:
-				}
-			case "RPC auth server started":
-				select {
-				case authRPC <- "ws://" + e.FieldValue("url").(string):
-				default:
-				}
-			}
-		}
-		stdOutLogs := logpipe.LogProcessor(func(line []byte) {
-			e := logpipe.ParseRustStructuredLogs(line)
-			logOut(e)
-			onLogEntry(e)
-		})
-		stdErrLogs := logpipe.LogProcessor(func(line []byte) {
-			e := logpipe.ParseRustStructuredLogs(line)
-			logErr(e)
-		})
-		l2EL.sub = NewSubProcess(p, stdOutLogs, stdErrLogs)
+
 		p.Logger().Info("Starting op-reth")
 		l2EL.Start()
 		p.Cleanup(l2EL.Stop)
-
-		p.Require().NoError(tasks.Await(p.Ctx(), userRPC, &l2EL.userRPC), "need user RPC")
-		p.Require().NoError(tasks.Await(p.Ctx(), authRPC, &l2EL.authRPC), "need auth RPC")
 		p.Logger().Info("op-reth is ready", "userRPC", l2EL.userRPC, "authRPC", l2EL.authRPC)
 		require.True(orch.l2ELs.SetIfMissing(id, l2EL), "must be unique L2 EL node")
 	})

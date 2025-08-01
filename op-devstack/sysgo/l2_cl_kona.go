@@ -18,15 +18,18 @@ import (
 	"github.com/ethereum-optimism/optimism/op-service/eth"
 	"github.com/ethereum-optimism/optimism/op-service/logpipe"
 	"github.com/ethereum-optimism/optimism/op-service/tasks"
+	"github.com/ethereum-optimism/optimism/op-service/testutils/tcpproxy"
 )
 
 type KonaNode struct {
 	id stack.L2CLNodeID
 
 	userRPC          string
-	interopEndpoint  string
+	interopEndpoint  string // warning: currently not fully supported
 	interopJwtSecret eth.Bytes32
 	el               stack.L2ELNodeID
+
+	userProxy *tcpproxy.Proxy
 
 	execPath string
 	args     []string
@@ -58,13 +61,55 @@ func (k *KonaNode) hydrate(system stack.ExtensibleSystem) {
 }
 
 func (k *KonaNode) Start() {
+	// Create a proxy for the user RPC,
+	// so other services can connect, and stay connected, across restarts.
+	if k.userProxy == nil {
+		k.userProxy = tcpproxy.New(k.p.Logger())
+		k.p.Require().NoError(k.userProxy.Start())
+		k.p.Cleanup(func() {
+			k.userProxy.Close()
+		})
+		k.userRPC = "http://" + k.userProxy.Addr()
+	}
+	// Create the sub-process.
+	// We pipe sub-process logs to the test-logger.
+	// And inspect them along the way, to get the RPC server address.
+	logOut := logpipe.ToLogger(k.p.Logger().New("src", "stdout"))
+	logErr := logpipe.ToLogger(k.p.Logger().New("src", "stderr"))
+	userRPC := make(chan string, 1)
+	onLogEntry := func(e logpipe.LogEntry) {
+		switch e.LogMessage() {
+		case "RPC server bound to address":
+			userRPC <- "http://" + e.FieldValue("addr").(string)
+		}
+	}
+	stdOutLogs := logpipe.LogProcessor(func(line []byte) {
+		e := logpipe.ParseRustStructuredLogs(line)
+		logOut(e)
+		onLogEntry(e)
+	})
+	stdErrLogs := logpipe.LogProcessor(func(line []byte) {
+		e := logpipe.ParseRustStructuredLogs(line)
+		logErr(e)
+	})
+	k.sub = NewSubProcess(k.p, stdOutLogs, stdErrLogs)
+
 	err := k.sub.Start(k.execPath, k.args, k.env)
 	k.p.Require().NoError(err, "Must start")
+
+	var userRPCAddr string
+	k.p.Require().NoError(tasks.Await(k.p.Ctx(), userRPC, &k.userRPC), "need user RPC")
+
+	k.userProxy.SetUpstream(proxyAddr(k.p.Require(), userRPCAddr))
 }
 
 // Stop stops the kona node.
 // warning: no restarts supported yet, since the RPC port is not remembered.
 func (k *KonaNode) Stop() {
+	if k.sub == nil {
+		k.p.Logger().Warn("kona-node already stopped")
+		return
+	}
 	err := k.sub.Stop()
 	k.p.Require().NoError(err, "Must stop")
 }
@@ -167,31 +212,9 @@ func WithKonaNode(l2CLID stack.L2CLNodeID, l1CLID stack.L1CLNodeID, l1ELID stack
 			env:              envVars,
 			p:                p,
 		}
-		logOut := logpipe.ToLogger(p.Logger().New("src", "stdout"))
-		logErr := logpipe.ToLogger(p.Logger().New("src", "stderr"))
-		userRPC := make(chan string, 1)
-		onLogEntry := func(e logpipe.LogEntry) {
-			switch e.LogMessage() {
-			case "RPC server bound to address":
-				userRPC <- "http://" + e.FieldValue("addr").(string)
-			}
-
-		}
-		stdOutLogs := logpipe.LogProcessor(func(line []byte) {
-			e := logpipe.ParseRustStructuredLogs(line)
-			logOut(e)
-			onLogEntry(e)
-		})
-		stdErrLogs := logpipe.LogProcessor(func(line []byte) {
-			e := logpipe.ParseRustStructuredLogs(line)
-			logErr(e)
-		})
-		k.sub = NewSubProcess(p, stdOutLogs, stdErrLogs)
-
 		p.Logger().Info("Starting kona-node")
 		k.Start()
 		p.Cleanup(k.Stop)
-		p.Require().NoError(tasks.Await(p.Ctx(), userRPC, &k.userRPC), "need user RPC")
 		p.Logger().Info("Kona-node is up", "rpc", k.UserRPC())
 		require.True(orch.l2CLs.SetIfMissing(l2CLID, k), "must not already exist")
 	})

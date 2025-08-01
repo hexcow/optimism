@@ -36,7 +36,7 @@ func TestPipeLogs(t *testing.T) {
 		defer wg.Done()
 		toLogger := ToLogger(logger)
 		logProc := func(line []byte) {
-			toLogger(ParseRethLog(line))
+			toLogger(ParseRustStructuredLogs(line))
 		}
 		err := PipeLogs(r, logProc)
 		require.NoError(t, err)
