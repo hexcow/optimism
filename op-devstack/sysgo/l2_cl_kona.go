@@ -207,9 +207,7 @@ func WithKonaNode(l2CLID stack.L2CLNodeID, l1CLID stack.L1CLNodeID, l1ELID stack
 		}
 
 		execPath := os.Getenv("KONA_NODE_EXEC_PATH")
-
 		p.Require().NotEmpty(execPath, "KONA_NODE_EXEC_PATH environment variable must be set")
-
 		_, err = os.Stat(execPath)
 		p.Require().NotErrorIs(err, os.ErrNotExist, "executable must exist")
 

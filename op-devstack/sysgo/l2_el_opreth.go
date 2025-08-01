@@ -187,11 +187,7 @@ func WithOpReth(id stack.L2ELNodeID, opts ...L2ELOption) stack.Option[*Orchestra
 		tempP2PPath := filepath.Join(tempDir, "p2pkey.txt")
 
 		execPath := os.Getenv("OP_RETH_EXEC_PATH")
-		if execPath == "" {
-			monorepoRoot, err := findMonorepoRoot("op-devstack/README.md")
-			p.Require().NoError(err, "must find monorepo root")
-			execPath = filepath.Join(monorepoRoot, "../reth/target/release/op-reth")
-		}
+		p.Require().NotEmpty(execPath, "OP_RETH_EXEC_PATH environment variable must be set")
 		_, err = os.Stat(execPath)
 		p.Require().NotErrorIs(err, os.ErrNotExist, "executable must exist")
 
