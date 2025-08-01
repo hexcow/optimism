@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"sync"
 
 	"github.com/ethereum-optimism/optimism/op-devstack/devtest"
 	"github.com/ethereum-optimism/optimism/op-devstack/shim"
@@ -16,6 +17,8 @@ import (
 )
 
 type OpReth struct {
+	mu sync.Mutex
+
 	id      stack.L2ELNodeID
 	l2Net   *L2Network
 	jwtPath string
@@ -58,6 +61,12 @@ func (n *OpReth) hydrate(system stack.ExtensibleSystem) {
 }
 
 func (n *OpReth) Start() {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	if n.sub != nil {
+		n.p.Logger().Warn("op-reth already started")
+		return
+	}
 	if n.authProxy == nil {
 		n.authProxy = tcpproxy.New(n.p.Logger())
 		n.p.Require().NoError(n.authProxy.Start())
@@ -117,8 +126,11 @@ func (n *OpReth) Start() {
 // Stop stops the op-reth node.
 // warning: no restarts supported yet, since the RPC port is not remembered.
 func (n *OpReth) Stop() {
+	n.mu.Lock()
+	defer n.mu.Unlock()
 	err := n.sub.Stop()
 	n.p.Require().NoError(err, "Must stop")
+	n.sub = nil
 }
 
 func (n *OpReth) UserRPC() string {

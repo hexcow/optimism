@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 
 	"github.com/ethereum/go-ethereum/crypto"
 
@@ -22,6 +23,8 @@ import (
 )
 
 type KonaNode struct {
+	mu sync.Mutex
+
 	id stack.L2CLNodeID
 
 	userRPC          string
@@ -61,6 +64,12 @@ func (k *KonaNode) hydrate(system stack.ExtensibleSystem) {
 }
 
 func (k *KonaNode) Start() {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	if k.sub != nil {
+		k.p.Logger().Warn("Kona-node already started")
+		return
+	}
 	// Create a proxy for the user RPC,
 	// so other services can connect, and stay connected, across restarts.
 	if k.userProxy == nil {
@@ -106,12 +115,15 @@ func (k *KonaNode) Start() {
 // Stop stops the kona node.
 // warning: no restarts supported yet, since the RPC port is not remembered.
 func (k *KonaNode) Stop() {
+	k.mu.Lock()
+	defer k.mu.Unlock()
 	if k.sub == nil {
 		k.p.Logger().Warn("kona-node already stopped")
 		return
 	}
 	err := k.sub.Stop()
 	k.p.Require().NoError(err, "Must stop")
+	k.sub = nil
 }
 
 func (k *KonaNode) UserRPC() string {
