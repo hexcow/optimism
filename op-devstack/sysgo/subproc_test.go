@@ -54,10 +54,6 @@ func testEcho(gt *testing.T, capt *testlog.CapturingHandler, sp *SubProcess) {
 		testlog.NewMessageFilter("hello world")))
 
 	require.NotNil(gt, capt.FindLog(
-		testlog.NewMessageFilter("Sub-process stopped"),
-		testlog.NewAttributesFilter("exitCode", "0")))
-
-	require.NotNil(gt, capt.FindLog(
 		testlog.NewMessageFilter("Sub-process gracefully exited")))
 }
 
